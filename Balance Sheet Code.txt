@@ -1,0 +1,247 @@
+log using "U:\stata\output\Stata_BS_log.txt", replace
+
+*Bhargav Pappu*
+*FIN 4010*
+*Stata Final Project Balance Sheet*
+
+clear
+
+set obs 1
+local firm="GWRE"
+gen page=fileread("https://www.zacks.com/stock/quote/`firm'/balance-sheet")
+gen tic="`firm'"
+local path="U:\stata\output\stata_6_`firm'_BS.xlsx"
+
+*keep only the lines that include the annual balance sheet
+
+*use the strpos and the substr functions from last session
+local bs_beg=strpos(page, "<!-- z2_balance_sheet start -->")
+display "`bs_beg'"
+local bs_end=strpos(page, ">Book Value Per Share<")
+display "`bs_end'"
+local bs_length=`bs_end' - `bs_beg'
+display "`bs_length'"
+replace page=substr(page, `bs_beg', `bs_length')
+
+*preliminary data cleaning to remove some characters and strings that are not needed or that make the parsing difficult
+
+*trim out repeat blanks using stritrim() which removes repeat blanks to just one blank
+replace page = stritrim(page)
+
+*remove tabs: char(9)
+replace page=subinstr(page, char(9), "", .)
+
+*remove line feeds: char(10) is a line feed
+replace page=subinstr(page, char(10), "", .)
+
+*remove carriage returns: char(13)
+replace page=subinstr(page, char(13), "", .)
+
+*remove double quotes: char(34)
+replace page=subinstr(page, char(34),"", .)
+
+*remove commas:
+replace page=subinstr(page, ",", "", .)
+
+*fix &'s
+replace page=subinstr(page, "&amp;", "&", .)
+
+*remove some html that is unnecessary
+replace page=subinstr(page, "<span>", "", .)
+replace page=subinstr(page, "</span>", "", .)
+replace page=subinstr(page, "td class=alpha>", "", .)
+replace page=subinstr(page,"</a></td>","</td>",.)
+*pull out the part of the page that has the fiscal year dates information
+gen fyear=substr(page,strpos(page,"<thead>"),strpos(page,"</thead>")-strpos(page,"<thead>"))
+*remove some of the page that is not needed
+replace page=substr(page,strpos(page,">Assets<"),ustrrpos(page,"</tr>")+5-strpos(page,">Assets<"))
+*count the number of characters that remain in the page
+local length=strlen(page)
+display "`length'"
+*create a new variable "item_#" that will capture each block of data (variable name and last 5 years of data)
+*create a counter for the number of balance sheet items
+local item_n=0
+*loops through the page (by character) and create a new variable each time you encounter a new row in the balance sheet
+*<tr> demarcates each new table row
+forvalues i=1/`length' {
+if substr(page,`i',4)=="<tr>" {
+local item_n=`item_n'+1
+gen item_`item_n'=substr(page,`i',.)
+}
+}
+*no longer need the original web page
+drop page
+*loop through your item variables to limit the text to the variable name and the numerical data
+*the end of the table row is marked with"</tr>"
+forvalue i=1/`item_n' {
+replace item_`i'=substr(item_`i',1,strpos(item_`i',"</tr>")-1)
+}
+*some of the data has clickable links (cash, assets, etc.), need to remove these hyperlinks
+*loop through each data item block
+*then loop through the text for that item block and remove the hyperlinks until they are all gone (strpos=0)
+forvalue i=1/`item_n' {
+while strpos(item_`i',"<a href")~=0 {
+replace item_`i'=regexr(item_`i',"<a href([^<]*)>","")
+}
+}
+*the items for table headings (total liabilities and shareholders equity) do no contain data and are not needed, they have "th class" in their text block
+*this code just makes these items variables missing ("")
+forvalues i=1/`item_n'{
+replace item_`i'="" if strpos(item_`i',"th class=")~=0
+}
+*this pulls out the variables names and uses them as the variable label, just so we don't forget what the items represent
+forvalues i=1/`item_n' {
+local temp=substr(item_`i',strpos(item_`i',"<tr>")+4,strpos(item_`i',"</td>")-(strpos(item_`i',"<tr>")+4))
+label var item_`i' "`temp'"
+replace item_`i'=substr(item_`i',strpos(item_`i',"</td>")+5,.)
+}
+*now we need to split the numerical data by year
+*this code will change the data html tags to identify in which table column is that data, <td_2> 1,000 </td_2> means 2nd column of data
+forvalues i=1/`item_n' {
+local td_count=0
+while strpos(item_`i',"<td>")~=0 {
+local td_count=`td_count'+1
+replace item_`i'=subinstr(item_`i',"<td>","<td_`td_count'>",1)
+replace item_`i'=subinstr(item_`i',"</td>","</td_`td_count'>",1)
+}
+}
+*duplicate the data to get a total of 5 rows (years), you do this because that is how many years of data the table has on the website
+expand 5
+*create a counter variable that notes to which column of data (on the webpage) the dataset's row corresponds
+gen yrnum=_n
+*now go through each item and strip out the numerical data from the appropriate table column tag
+*first just do this for the first item to demonstrate
+replace item_1=substr(item_1,strpos(item_1,"<td_1>")+6,strpos(item_1,"</td_1>")-(strpos(item_1,"<td_1>")+6)) if yrnum==1
+replace item_1=substr(item_1,strpos(item_1,"<td_2>")+6,strpos(item_1,"</td_2>")-(strpos(item_1,"<td_2>")+6)) if yrnum==2
+replace item_1=substr(item_1,strpos(item_1,"<td_3>")+6,strpos(item_1,"</td_3>")-(strpos(item_1,"<td_3>")+6)) if yrnum==3
+replace item_1=substr(item_1,strpos(item_1,"<td_4>")+6,strpos(item_1,"</td_4>")-(strpos(item_1,"<td_4>")+6)) if yrnum==4
+replace item_1=substr(item_1,strpos(item_1,"<td_5>")+6,strpos(item_1,"</td_5>")-(strpos(item_1,"<td_5>")+6)) if yrnum==5
+*now loop through the remaining items
+forvalues i=2/`item_n' {
+replace item_`i'=substr(item_`i',strpos(item_`i',"<td_1>")+6,strpos(item_`i',"</td_1>")-(strpos(item_`i',"<td_1>")+6)) if yrnum==1
+replace item_`i'=substr(item_`i',strpos(item_`i',"<td_2>")+6,strpos(item_`i',"</td_2>")-(strpos(item_`i',"<td_2>")+6)) if yrnum==2
+replace item_`i'=substr(item_`i',strpos(item_`i',"<td_3>")+6,strpos(item_`i',"</td_3>")-(strpos(item_`i',"<td_3>")+6)) if yrnum==3
+replace item_`i'=substr(item_`i',strpos(item_`i',"<td_4>")+6,strpos(item_`i',"</td_4>")-(strpos(item_`i',"<td_4>")+6)) if yrnum==4
+replace item_`i'=substr(item_`i',strpos(item_`i',"<td_5>")+6,strpos(item_`i',"</td_5>")-(strpos(item_`i',"<td_5>")+6)) if yrnum==5
+}
+*now we need to get the dates out of the fyear data variable
+*first, remove some of the html that is not helpful
+replace fyear=subinstr(fyear,"<thead><tr><th class=center></th>","",.)
+*create a fyear counter so that we can create html data tags to track to which year the dataset's row corresponds
+local fyr_count=0
+*now loop through the html and change the <th class=> </th> tags to <fyr_#> </fyr_#> to track the corresponding years
+while strpos(fyear,"<th class=>")~=0{
+local fyr_count=`fyr_count'+1
+replace fyear=subinstr(fyear,"<th class=>","<fyr_`fyr_count'>",1)
+replace fyear=subinstr(fyear,"</th>","</fyr_`fyr_count'>",1)
+}
+*now strip out the fyear year data
+replace fyear=substr(fyear,strpos(fyear,"<fyr_1>")+7,strpos(fyear,"</fyr_1>")-(strpos(fyear,"<fyr_1>")+7)) if yrnum==1
+replace fyear=substr(fyear,strpos(fyear,"<fyr_2>")+7,strpos(fyear,"</fyr_2>")-(strpos(fyear,"<fyr_2>")+7)) if yrnum==2
+replace fyear=substr(fyear,strpos(fyear,"<fyr_3>")+7,strpos(fyear,"</fyr_3>")-(strpos(fyear,"<fyr_3>")+7)) if yrnum==3
+replace fyear=substr(fyear,strpos(fyear,"<fyr_4>")+7,strpos(fyear,"</fyr_4>")-(strpos(fyear,"<fyr_4>")+7)) if yrnum==4
+replace fyear=substr(fyear,strpos(fyear,"<fyr_5>")+7,strpos(fyear,"</fyr_5>")-(strpos(fyear,"<fyr_5>")+7)) if yrnum==5
+drop yrnum
+*destring your financial data so that you have numerical data instead of string data
+forvalue i=1/`item_n' {
+destring item_`i', force replace
+}
+*destring the fyear variable
+gen fyear2=date(fyear,"MDY")
+format fyear2 %td
+drop fyear
+rename fyear2 fyear
+*combine some of the balance sheet for a more concise presentation
+*use some variable names that are similar to what we've had in compustat (not exact), easier to understand
+gen che=item_1
+gen ar=item_2
+gen nr=item_3
+gen inv=item_4
+gen aco=item_5
+gen act=item_6
+gen ppent=item_7
+gen ivao=item_8
+gen intan=item_11
+gen ao=item_9
+gen defc=item_10
+gen depoa=item_12
+gen at=item_13
+gen np=item_15
+gen dlc=item_15
+gen ap=item_16
+gen cpltd=item_17
+gen cplease=item_18
+gen ae =item_19
+gen txp=item_20
+gen lco=item_21
+gen lct=item_22
+gen mort=item_23
+gen deft=item_24
+gen convd=item_25
+gen ltd=item_26
+gen ltlease=item_27
+gen oncl=item_28
+gen mib=item_29
+gen lt=item_30
+gen pstk=item_32
+gen ceq=item_40
+gen cstk=item_33
+gen caps=item_34
+gen re=item_35
+gen oe=item_36
+gen tstk=item_37
+gen seq=item_38
+gen lse=item_39
+gen csho=item_41
+*label your balance sheet
+label var che "Cash"
+label var ar "Accounts receivable"
+label var nr "Notes Receivable"
+label var inv "Inventory"
+label var aco "Other current assets"
+label var act "Total current assets"
+label var ppent "PPE, net"
+label var ivao "Investment and advances - other"
+label var intan "Intangible assets"
+label var ao "Other non-current assets"
+label var defc "Deferred Charges"
+label var depoa "Deposits and Other assets"
+label var at "Total assets"
+label var dlc "Short-term debt"
+label var np "Notes Payable"
+label var ap "Accounts payable"
+label var cpltd "Current Portion Long-Term Debt"
+label var cplease "Current Portion Capital Leases"
+label var ae "Accrued Expenses"
+label var mort "Mortgages"
+label var deft "Deferred Taxes"
+label var convd "Convertible Debt"
+label var txp "Income taxes payable"
+label var lco "Other current liabilities"
+label var lct "Total current liabilities"
+label var ltd "Long-Term Debt"
+label var ltlease "Non-Current Capital Leases"
+label var oncl "Other Non-Current Liabilities"
+label var mib "Minority interests"
+label var ltd "Total liabilities"
+label var pstk "Preferred stock"
+label var ceq "Common equity"
+label var cstk "Par value of common stock"
+label var caps "Additional paid-in capital"
+label var re "Retained earnings"
+label var oe "Accum other comp income"
+label var tstk "Treasury stock"
+label var seq "Total shareholders equity"
+label var lse "Total liabilities and shareholders equity"
+label var csho "Common shares outstanding"
+*no longer need the item variables
+drop item_*
+*export to excel
+export excel using "`path'", sheet("BS_data") firstrow(var) replace
+export excel using "`path'", sheet("BS_data_label") sheetreplace firstrow(varlabels)
+log close
+
+
+
+
+

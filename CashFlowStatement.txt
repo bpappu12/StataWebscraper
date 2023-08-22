@@ -1,0 +1,175 @@
+log using "U:\stata\output\Stata_CFS_Log.txt", replace
+
+*Bhargav Pappu*
+*FIN 4010*
+*Code for Stata CFS*
+
+clear
+set obs 1
+local firm="GWRE"
+gen page=fileread("https://www.zacks.com/stock/quote/`firm'/cash-flow-statements")
+gen tic="`firm'"
+local path="U:\stata\output\stata_`firm'_cfs.xlsx"
+
+local cs_beg=strpos(page, "<!-- z2_cash_flow start -->")
+display "`cs_beg'"
+local cs_end=strpos(page, "<!-- End Uses of Funds --><!-- z2_cash_flow end -->")
+display "`cs_end'"
+local cs_length=`cs_end'-`cs_beg'
+display "`cs_length'"
+replace page=substr(page, `cs_beg', `cs_length')
+display "`cs_length'"
+*trim out repeat blanks using stritrim() which removes repeat blanks to just one blank
+replace page = stritrim(page)
+*remove tabs: char(9)
+replace page=subinstr(page, char(9), "", .)
+*remove line feeds: char(10) is a line feed
+replace page=subinstr(page, char(10), "", .)
+*remove carriage returns: char(13)
+replace page=subinstr(page, char(13), "", .)
+*remove double quotes: char(34)
+replace page=subinstr(page, char(34),"", .)
+*remove commas:
+replace page=subinstr(page, ",", "", .)
+*fix &'s
+replace page=subinstr(page, "&amp;", "&", .)
+*remove some html that is unnecessary
+replace page=subinstr(page, "<span>", "", .)
+replace page=subinstr(page, "</span>", "", .)
+replace page=subinstr(page, "td class=alpha>", "", .)
+replace page=subinstr(page,"</a></td>","</td>",.)
+*pull out the part of the page that has the fiscal year dates information
+gen fyear=substr(page,strpos(page,"<thead>"),strpos(page,"</thead>")-strpos(page,"<thead>"))
+replace page=substr(page, strpos(page, "<Cash Flow From Operations Investments & Financial <br/>Activities<"), ustrrpos(page, "</tr>")+5-strpos(page, "<Cash Flow From Operations Investments & Financial <br/>Activities<"))
+local length=strlen(page)
+display "`length'"
+local item_n=0
+forvalues i=1/`length' {
+if substr(page,`i',4)=="<tr>" {
+local item_n=`item_n'+1
+gen item_`item_n'=substr(page,`i',.)
+}
+}
+drop page
+forvalue i=1/`item_n' {
+replace item_`i'=substr(item_`i', 1, strpos(item_`i', "</tr>")-1)
+}
+forvalue i=1/`item_n' {
+while strpos(item_`i',"<a href")~=0 {
+replace item_`i'=regexr(item_`i',"<a href([^<]*)>","")
+}
+}
+forvalues i=1/`item_n'{
+replace item_`i'="" if strpos(item_`i',"th class=")~=0
+}
+*this pulls out the variables names and uses them as the variable label, just so we don't forget what the items represent
+forvalues i=1/`item_n' {
+local temp=substr(item_`i',strpos(item_`i',"<tr>")+4,strpos(item_`i',"</td>")-(strpos(item_`i',"<tr>")+4))
+label var item_`i' "`temp'"
+replace item_`i'=substr(item_`i',strpos(item_`i',"</td>")+5,.)
+}
+*now we need to split the numerical data by year
+*this code will change the data html tags to identify in which table column is that data, <td_2> 1,000 </td_2> means 2nd column of data
+forvalues i=1/`item_n' {
+local td_count=0
+while strpos(item_`i',"<td>")~=0 {
+local td_count=`td_count'+1
+replace item_`i'=subinstr(item_`i',"<td>","<td_`td_count'>",1)
+replace item_`i'=subinstr(item_`i',"</td>","</td_`td_count'>",1)
+}
+}
+*duplicate the data to get a total of 5 rows (years), you do this because that is how many years of data the table has on the website
+expand 5
+*create a counter variable that notes to which column of data (on the webpage) the dataset's row corresponds
+gen yrnum=_n
+*now go through each item and strip out the numerical data from the appropriate table column tag
+*first just do this for the first item to demonstrate
+replace item_1=substr(item_1,strpos(item_1,"<td_1>")+6,strpos(item_1,"</td_1>")-(strpos(item_1,"<td_1>")+6)) if yrnum==1
+replace item_1=substr(item_1,strpos(item_1,"<td_2>")+6,strpos(item_1,"</td_2>")-(strpos(item_1,"<td_2>")+6)) if yrnum==2
+replace item_1=substr(item_1,strpos(item_1,"<td_3>")+6,strpos(item_1,"</td_3>")-(strpos(item_1,"<td_3>")+6)) if yrnum==3
+replace item_1=substr(item_1,strpos(item_1,"<td_4>")+6,strpos(item_1,"</td_4>")-(strpos(item_1,"<td_4>")+6)) if yrnum==4
+replace item_1=substr(item_1,strpos(item_1,"<td_5>")+6,strpos(item_1,"</td_5>")-(strpos(item_1,"<td_5>")+6)) if yrnum==5
+*now loop through the remaining items
+forvalues i=2/`item_n' {
+replace item_`i'=substr(item_`i',strpos(item_`i',"<td_1>")+6,strpos(item_`i',"</td_1>")-(strpos(item_`i',"<td_1>")+6)) if yrnum==1
+replace item_`i'=substr(item_`i',strpos(item_`i',"<td_2>")+6,strpos(item_`i',"</td_2>")-(strpos(item_`i',"<td_2>")+6)) if yrnum==2
+replace item_`i'=substr(item_`i',strpos(item_`i',"<td_3>")+6,strpos(item_`i',"</td_3>")-(strpos(item_`i',"<td_3>")+6)) if yrnum==3
+replace item_`i'=substr(item_`i',strpos(item_`i',"<td_4>")+6,strpos(item_`i',"</td_4>")-(strpos(item_`i',"<td_4>")+6)) if yrnum==4
+replace item_`i'=substr(item_`i',strpos(item_`i',"<td_5>")+6,strpos(item_`i',"</td_5>")-(strpos(item_`i',"<td_5>")+6)) if yrnum==5
+}
+*now we need to get the dates out of the fyear data variable
+*first, remove some of the html that is not helpful
+replace fyear=subinstr(fyear,"<thead><tr><th class=center></th>","",.)
+*create a fyear counter so that we can create html data tags to track to which year the dataset's row corresponds
+local fyr_count=0
+*now loop through the html and change the <th class=> </th> tags to <fyr_#> </fyr_#> to track the corresponding years
+while strpos(fyear,"<th class=>")~=0{
+local fyr_count=`fyr_count'+1
+replace fyear=subinstr(fyear,"<th class=>","<fyr_`fyr_count'>",1)
+replace fyear=subinstr(fyear,"</th>","</fyr_`fyr_count'>",1)
+}
+*now strip out the fyear year data
+replace fyear=substr(fyear,strpos(fyear,"<fyr_1>")+7,strpos(fyear,"</fyr_1>")-(strpos(fyear,"<fyr_1>")+7)) if yrnum==1
+replace fyear=substr(fyear,strpos(fyear,"<fyr_2>")+7,strpos(fyear,"</fyr_2>")-(strpos(fyear,"<fyr_2>")+7)) if yrnum==2
+replace fyear=substr(fyear,strpos(fyear,"<fyr_3>")+7,strpos(fyear,"</fyr_3>")-(strpos(fyear,"<fyr_3>")+7)) if yrnum==3
+replace fyear=substr(fyear,strpos(fyear,"<fyr_4>")+7,strpos(fyear,"</fyr_4>")-(strpos(fyear,"<fyr_4>")+7)) if yrnum==4
+replace fyear=substr(fyear,strpos(fyear,"<fyr_5>")+7,strpos(fyear,"</fyr_5>")-(strpos(fyear,"<fyr_5>")+7)) if yrnum==5
+drop yrnum
+*destring your financial data so that you have numerical data instead of string data
+forvalue i=1/`item_n' {
+destring item_`i', force replace
+}
+*destring the fyear variable
+gen fyear2=date(fyear,"MDY")
+format fyear2 %td
+drop fyear
+rename fyear2 fyear
+gen cfs_ni=item_1
+gen cfs_dep=item_2
+gen cfs_nca=item_3
+gen cfs_ncdo=item_4
+gen cfs_ooa=item_5
+gen cfs_ncfoa=item_6
+gen cfs_ppe=item_7
+gen cfs_acq=item_8
+gen cfs_inv=item_9
+gen cfs_oinv=item_10
+gen cfs_invcf=item_11
+gen cfs_cstk=item_13
+gen cfs_ltd=item_14
+gen cfs_std=item_15
+gen cfs_div=item_16
+gen cfs_ofin=item_17
+gen cfs_ncfin=item_18
+gen cfs_exchg=item_19
+gen cfs_dcash=item_20
+gen cfs_begc=item_21
+gen cfs_endc=item_22
+gen cfs_epsd=item_23
+label var cfs_ni "Net Income (Loss)"
+label var cfs_dep "Depreciation/Amortization & Depletion"
+label var cfs_nca "Net Change from Assets/Liabilities"
+label var cfs_ncdo "Net Cash from Discontinued Operations"
+label var cfs_ooa "Other Operating Activities"
+label var cfs_ncfoa "Net Cash From Operating Activities"
+label var cfs_ppe "Property & Equipment"
+label var cfs_acq "Acquisition/ Disposition of Subsidiaries"
+label var cfs_inv "Investments"
+label var cfs_oinv "Other Investing Activities"
+label var cfs_invcf "Net Cash from Investing Activities"
+label var cfs_cstk "Issuance (Repurchase) of Capital Stock"
+label var cfs_ltd "Issuance (Repayment) of Debt"
+label var cfs_std "Increase (Decrease) Short-Term Debt"
+label var cfs_div "Payment of Dividends & Other Distributions"
+label var cfs_ofin "Other Financing Activities"
+label var cfs_ncfin "Net Cash from Financing Activities"
+label var cfs_exchg "Effect of Exchange Rate Changes"
+label var cfs_dcash "Net Change In Cash & Equivalents"
+label var cfs_begc "Cash at Beginning of Period"
+label var cfs_endc "Cash at End of Period"
+label var cfs_epsd "Diluted Net EPS"
+drop item_*
+export excel using "`path'", sheet("BS_data") firstrow(var) replace
+export excel using "`path'", sheet("BS_data_label") sheetreplace firstrow(varlabels)
+log close
+
